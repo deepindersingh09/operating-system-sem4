@@ -1,4 +1,5 @@
-# Deploy the Python Azure Function in project1_task5/function_app on pushes to main
+# Auto-detect the Azure Functions folder and deploy (Python 3.10)
+
 name: Deploy Azure Function (Python 3.10)
 
 on:
@@ -7,11 +8,8 @@ on:
   workflow_dispatch:
 
 env:
-  # 👇 Set to your exact Function App name from the Azure portal
+  # 👇 Set this to your exact Function App name from the Azure portal
   AZURE_FUNCTIONAPP_NAME: "nutritional-insights-func"
-  # Code location inside your repo
-  AZURE_FUNCTIONAPP_PACKAGE_PATH: "project1_task5/function_app"
-  # Match your runtime
   PYTHON_VERSION: "3.10"
 
 jobs:
@@ -29,19 +27,41 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      # Install requirements from the function folder (fixes the previous "requirements.txt not found")
-      - name: Install dependencies
-        working-directory: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+      # 🔎 Find the folder that contains host.json (the Functions app root)
+      - name: Locate function app folder
+        id: locate
+        shell: bash
         run: |
-            python -m pip install --upgrade pip
-            pip install -r requirements.txt --target=".python_packages/lib/site-packages"
+          set -e
+          echo "Repo tree (top 3 levels) for debugging:"
+          find . -maxdepth 3 -type d -print
 
-      # Deploy using Publish Profile secret (no Azure login/service principal required)
+          # Look for host.json tracked in git
+          FUNC_PATH=$(git ls-files | grep -E '(^|/)host\.json$' | head -n1 | xargs -I{} dirname {})
+          if [ -z "$FUNC_PATH" ]; then
+            echo "ERROR: Could not find host.json in the repo. Ensure your function app folder is committed."
+            exit 1
+          fi
+          echo "Detected function app path: $FUNC_PATH"
+          echo "FUNC_PATH=$FUNC_PATH" >> "$GITHUB_ENV"
+
+      # 📦 Install dependencies from that folder (expects requirements.txt there)
+      - name: Install dependencies
+        working-directory: ${{ env.FUNC_PATH }}
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt --target=".python_packages/lib/site-packages"
+          else
+            echo "No requirements.txt found in $PWD (that's OK if you don't have deps)."
+          fi
+
+      # 🚀 Deploy using the Publish Profile secret
       - name: Deploy to Azure Functions
         uses: Azure/functions-action@v1
         with:
           app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }}
-          package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+          package: ${{ env.FUNC_PATH }}
           publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
           scm-do-build-during-deployment: true
           enable-oryx-build: true
